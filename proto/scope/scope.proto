@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package hetty.scope.v1;
+
+option go_package = "github.com/dstotijn/hetty/pkg/scope";
+
+message ScopeRule {
+  string url_regexp = 1;
+  string header_key_regexp = 2;
+  string header_value_regexp = 3;
+  string body_regexp = 4;
+}

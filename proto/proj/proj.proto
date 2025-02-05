@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package hetty.proj.v1;
+
+import "reqlog/reqlog.proto";
+import "scope/scope.proto";
+
+option go_package = "github.com/dstotijn/hetty/pkg/proj";
+
+message Project {
+  string id = 1;
+  string name = 2;
+  bool is_active = 3;
+
+  // Request log settings
+  bool req_log_bypass_out_of_scope = 4;
+
+  // Request logs filter
+  hetty.reqlog.v1.RequestLogsFilter req_log_filter = 5;
+
+  // Intercept settings
+  bool intercept_requests = 6;
+  bool intercept_responses = 7;
+  string intercept_request_filter_expr = 8;
+  string intercept_response_filter_expr = 9;
+
+  // Sender settings
+  bool sender_only_find_in_scope = 10;
+  string sender_search_expr = 11;
+
+  // Scope settings
+  repeated hetty.scope.v1.ScopeRule scope_rules = 12;
+}
+
+message CreateProjectRequest {
+  string name = 1;
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message OpenProjectRequest {
+  string project_id = 1;
+}
+
+message OpenProjectResponse {
+  Project project = 1;
+}
+
+message CloseProjectRequest {}
+
+message CloseProjectResponse {}
+
+message DeleteProjectRequest {
+  string project_id = 1;
+}
+
+message DeleteProjectResponse {}
+
+message GetActiveProjectRequest {}
+
+message GetActiveProjectResponse {
+  Project project = 1;
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+}
+
+message UpdateInterceptSettingsRequest {
+  bool requests_enabled = 1;
+  bool responses_enabled = 2;
+  string request_filter_expr = 3;
+  string response_filter_expr = 4;
+}
+
+message UpdateInterceptSettingsResponse {}
+
+message SetScopeRulesRequest {
+  repeated hetty.scope.v1.ScopeRule rules = 1;
+}
+
+message SetScopeRulesResponse {}
+
+message SetRequestLogsFilterRequest {
+  hetty.reqlog.v1.RequestLogsFilter filter = 1;
+}
+
+message SetRequestLogsFilterResponse {}
+
+service ProjectService {
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {}
+  rpc OpenProject(OpenProjectRequest) returns (OpenProjectResponse) {}
+  rpc CloseProject(CloseProjectRequest) returns (CloseProjectResponse) {}
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse) {}
+  rpc GetActiveProject(GetActiveProjectRequest) returns (GetActiveProjectResponse) {}
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse) {}
+  rpc UpdateInterceptSettings(UpdateInterceptSettingsRequest) returns (UpdateInterceptSettingsResponse) {}
+  rpc SetScopeRules(SetScopeRulesRequest) returns (SetScopeRulesResponse) {}
+  rpc SetRequestLogsFilter(SetRequestLogsFilterRequest) returns (SetRequestLogsFilterResponse) {}
+}

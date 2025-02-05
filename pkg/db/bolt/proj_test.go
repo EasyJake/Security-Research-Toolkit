@@ -1,39 +1,20 @@
 package bolt_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"errors"
-	"math/rand"
-	"regexp"
 	"testing"
-	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 	"go.etcd.io/bbolt"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/dstotijn/hetty/pkg/db/bolt"
-	"github.com/dstotijn/hetty/pkg/filter"
 	"github.com/dstotijn/hetty/pkg/proj"
+	"github.com/dstotijn/hetty/pkg/reqlog"
 	"github.com/dstotijn/hetty/pkg/scope"
+	"github.com/dstotijn/hetty/pkg/testutil"
 )
-
-//nolint:gosec
-var ulidEntropy = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-var regexpCompareOpt = cmp.Comparer(func(x, y *regexp.Regexp) bool {
-	switch {
-	case x == nil && y == nil:
-		return true
-	case x == nil || y == nil:
-		return false
-	default:
-		return x.String() == y.String()
-	}
-})
 
 func TestUpsertProject(t *testing.T) {
 	t.Parallel()
@@ -50,27 +31,20 @@ func TestUpsertProject(t *testing.T) {
 	}
 	defer db.Close()
 
-	searchExpr, err := filter.ParseQuery("foo AND bar OR NOT baz")
-	if err != nil {
-		t.Fatalf("unexpected error (expected: nil, got: %v)", err)
-	}
-
-	exp := proj.Project{
-		ID:   ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-		Name: "foobar",
-		Settings: proj.Settings{
-			ReqLogBypassOutOfScope: true,
-			ReqLogOnlyFindInScope:  true,
-			ReqLogSearchExpr:       searchExpr,
-			ScopeRules: []scope.Rule{
-				{
-					URL: regexp.MustCompile("^https://(.*)example.com(.*)$"),
-					Header: scope.Header{
-						Key:   regexp.MustCompile("^X-Foo(.*)$"),
-						Value: regexp.MustCompile("^foo(.*)$"),
-					},
-					Body: regexp.MustCompile("^foo(.*)"),
-				},
+	exp := &proj.Project{
+		Id:                     "foobar-project-id",
+		Name:                   "foobar",
+		ReqLogBypassOutOfScope: true,
+		ReqLogFilter: &reqlog.RequestLogsFilter{
+			OnlyInScope: true,
+			SearchExpr:  "foo AND bar OR NOT baz",
+		},
+		ScopeRules: []*scope.ScopeRule{
+			{
+				UrlRegexp:         "^https://(.*)example.com(.*)$",
+				HeaderKeyRegexp:   "^X-Foo(.*)$",
+				HeaderValueRegexp: "^foo(.*)$",
+				BodyRegexp:        "^foo(.*)",
 			},
 		},
 	}
@@ -83,7 +57,7 @@ func TestUpsertProject(t *testing.T) {
 	var rawProject []byte
 
 	err = boltDB.View(func(tx *bbolt.Tx) error {
-		rawProject = tx.Bucket([]byte("projects")).Bucket(exp.ID[:]).Get([]byte("project"))
+		rawProject = tx.Bucket([]byte("projects")).Bucket([]byte(exp.Id)).Get([]byte("project"))
 		return nil
 	})
 	if err != nil {
@@ -93,16 +67,14 @@ func TestUpsertProject(t *testing.T) {
 		t.Fatalf("expected raw project to be retrieved, got: nil")
 	}
 
-	got := proj.Project{}
+	got := &proj.Project{}
 
-	err = gob.NewDecoder(bytes.NewReader(rawProject)).Decode(&got)
+	err = proto.Unmarshal(rawProject, got)
 	if err != nil {
 		t.Fatalf("unexpected error decoding project: %v", err)
 	}
 
-	if diff := cmp.Diff(exp, got, regexpCompareOpt, cmpopts.IgnoreUnexported(proj.Project{})); diff != "" {
-		t.Fatalf("project not equal (-exp, +got):\n%v", diff)
-	}
+	testutil.ProtoDiff(t, "project not equal", exp, got, "id")
 }
 
 func TestFindProjectByID(t *testing.T) {
@@ -123,36 +95,32 @@ func TestFindProjectByID(t *testing.T) {
 		}
 		defer db.Close()
 
-		exp := proj.Project{
-			ID: ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
+		exp := &proj.Project{
+			Id: ulid.Make().String(),
 		}
 
-		buf := bytes.Buffer{}
-
-		err = gob.NewEncoder(&buf).Encode(exp)
+		buf, err := proto.Marshal(exp)
 		if err != nil {
 			t.Fatalf("unexpected error encoding project: %v", err)
 		}
 
 		err = boltDB.Update(func(tx *bbolt.Tx) error {
-			b, err := tx.Bucket([]byte("projects")).CreateBucket(exp.ID[:])
+			b, err := tx.Bucket([]byte("projects")).CreateBucket([]byte(exp.Id))
 			if err != nil {
 				return err
 			}
-			return b.Put([]byte("project"), buf.Bytes())
+			return b.Put([]byte("project"), buf)
 		})
 		if err != nil {
 			t.Fatalf("unexpected error setting project: %v", err)
 		}
 
-		got, err := db.FindProjectByID(context.Background(), exp.ID)
+		got, err := db.FindProjectByID(context.Background(), exp.Id)
 		if err != nil {
 			t.Fatalf("unexpected error finding project: %v", err)
 		}
 
-		if diff := cmp.Diff(exp, got, cmpopts.IgnoreUnexported(proj.Project{})); diff != "" {
-			t.Fatalf("project not equal (-exp, +got):\n%v", diff)
-		}
+		testutil.ProtoDiff(t, "project not equal", exp, got)
 	})
 
 	t.Run("project not found", func(t *testing.T) {
@@ -170,7 +138,7 @@ func TestFindProjectByID(t *testing.T) {
 		}
 		defer db.Close()
 
-		projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		projectID := ulid.Make().String()
 
 		_, err = db.FindProjectByID(context.Background(), projectID)
 		if !errors.Is(err, proj.ErrProjectNotFound) {
@@ -195,9 +163,9 @@ func TestDeleteProject(t *testing.T) {
 	defer db.Close()
 
 	// Insert test fixture.
-	projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-	err = db.UpsertProject(context.Background(), proj.Project{
-		ID: projectID,
+	projectID := ulid.Make().String()
+	err = db.UpsertProject(context.Background(), &proj.Project{
+		Id: projectID,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error storing project: %v", err)
@@ -209,8 +177,8 @@ func TestDeleteProject(t *testing.T) {
 	}
 
 	var got *bbolt.Bucket
-	err = boltDB.View(func(tx *bbolt.Tx) error {
-		got = tx.Bucket([]byte("projects")).Bucket(projectID[:])
+	_ = boltDB.View(func(tx *bbolt.Tx) error {
+		got = tx.Bucket([]byte("projects")).Bucket([]byte(projectID))
 		return nil
 	})
 	if got != nil {
@@ -233,13 +201,13 @@ func TestProjects(t *testing.T) {
 	}
 	defer db.Close()
 
-	exp := []proj.Project{
+	exp := []*proj.Project{
 		{
-			ID:   ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
+			Id:   ulid.Make().String(),
 			Name: "one",
 		},
 		{
-			ID:   ulid.MustNew(ulid.Timestamp(time.Now())+100, ulidEntropy),
+			Id:   ulid.Make().String(),
 			Name: "two",
 		},
 	}
@@ -261,7 +229,5 @@ func TestProjects(t *testing.T) {
 		t.Fatalf("expected %v projects, got: %v", len(exp), len(got))
 	}
 
-	if diff := cmp.Diff(exp, got, cmpopts.IgnoreUnexported(proj.Project{})); diff != "" {
-		t.Fatalf("projects not equal (-exp, +got):\n%v", diff)
-	}
+	testutil.ProtoSlicesDiff(t, "projects not equal", exp, got)
 }

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/dstotijn/hetty/pkg/filter"
-	"github.com/dstotijn/hetty/pkg/reqlog"
+	"github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/sender"
 )
 
@@ -14,15 +14,17 @@ func TestRequestLogMatch(t *testing.T) {
 	tests := []struct {
 		name          string
 		query         string
-		senderReq     sender.Request
+		senderReq     *sender.Request
 		expectedMatch bool
 		expectedError error
 	}{
 		{
 			name:  "infix expression, equal operator, match",
 			query: "req.body = foo",
-			senderReq: sender.Request{
-				Body: []byte("foo"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("foo"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -30,8 +32,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, not equal operator, match",
 			query: "req.body != bar",
-			senderReq: sender.Request{
-				Body: []byte("foo"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("foo"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -39,8 +43,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, greater than operator, match",
 			query: "req.body > a",
-			senderReq: sender.Request{
-				Body: []byte("b"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("b"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -48,8 +54,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, less than operator, match",
 			query: "req.body < b",
-			senderReq: sender.Request{
-				Body: []byte("a"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("a"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -57,8 +65,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, greater than or equal operator, match greater than",
 			query: "req.body >= a",
-			senderReq: sender.Request{
-				Body: []byte("b"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("b"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -66,8 +76,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, greater than or equal operator, match equal",
 			query: "req.body >= a",
-			senderReq: sender.Request{
-				Body: []byte("a"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("a"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -75,8 +87,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, less than or equal operator, match less than",
 			query: "req.body <= b",
-			senderReq: sender.Request{
-				Body: []byte("a"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("a"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -84,8 +98,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, less than or equal operator, match equal",
 			query: "req.body <= b",
-			senderReq: sender.Request{
-				Body: []byte("b"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("b"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -93,8 +109,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, regular expression operator, match",
 			query: `req.body =~ "^foo(.*)$"`,
-			senderReq: sender.Request{
-				Body: []byte("foobar"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("foobar"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -102,8 +120,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, negate regular expression operator, match",
 			query: `req.body !~ "^foo(.*)$"`,
-			senderReq: sender.Request{
-				Body: []byte("xoobar"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("xoobar"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -111,9 +131,11 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, and operator, match",
 			query: "req.body = bar AND res.body = yolo",
-			senderReq: sender.Request{
-				Body: []byte("bar"),
-				Response: &reqlog.ResponseLog{
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("bar"),
+				},
+				HttpResponse: &http.Response{
 					Body: []byte("yolo"),
 				},
 			},
@@ -123,9 +145,11 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "infix expression, or operator, match",
 			query: "req.body = bar OR res.body = yolo",
-			senderReq: sender.Request{
-				Body: []byte("foo"),
-				Response: &reqlog.ResponseLog{
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("foo"),
+				},
+				HttpResponse: &http.Response{
 					Body: []byte("yolo"),
 				},
 			},
@@ -135,8 +159,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "prefix expression, not operator, match",
 			query: "NOT (req.body = bar)",
-			senderReq: sender.Request{
-				Body: []byte("foo"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("foo"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -144,8 +170,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "string literal expression, match in request log",
 			query: "foo",
-			senderReq: sender.Request{
-				Body: []byte("foo"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("foo"),
+				},
 			},
 			expectedMatch: true,
 			expectedError: nil,
@@ -153,8 +181,10 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "string literal expression, no match",
 			query: "foo",
-			senderReq: sender.Request{
-				Body: []byte("bar"),
+			senderReq: &sender.Request{
+				HttpRequest: &http.Request{
+					Body: []byte("bar"),
+				},
 			},
 			expectedMatch: false,
 			expectedError: nil,
@@ -162,8 +192,8 @@ func TestRequestLogMatch(t *testing.T) {
 		{
 			name:  "string literal expression, match in response log",
 			query: "foo",
-			senderReq: sender.Request{
-				Response: &reqlog.ResponseLog{
+			senderReq: &sender.Request{
+				HttpResponse: &http.Response{
 					Body: []byte("foo"),
 				},
 			},

@@ -3,19 +3,17 @@ package bolt_test
 import (
 	"context"
 	"errors"
-	"net/http"
 	"net/url"
 	"testing"
-	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 	"go.etcd.io/bbolt"
 
 	"github.com/dstotijn/hetty/pkg/db/bolt"
+	"github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/proj"
-	"github.com/dstotijn/hetty/pkg/reqlog"
 	"github.com/dstotijn/hetty/pkg/sender"
+	"github.com/dstotijn/hetty/pkg/testutil"
 )
 
 var exampleURL = func() *url.URL {
@@ -43,11 +41,11 @@ func TestFindRequestByID(t *testing.T) {
 	}
 	defer db.Close()
 
-	projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+	projectID := "foobar-project-id"
+	reqID := "foobar-req-id"
 
-	err = db.UpsertProject(context.Background(), proj.Project{
-		ID: projectID,
+	err = db.UpsertProject(context.Background(), &proj.Project{
+		Id: projectID,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error upserting project: %v", err)
@@ -67,24 +65,31 @@ func TestFindRequestByID(t *testing.T) {
 		t.Run("sender request found", func(t *testing.T) {
 			t.Parallel()
 
-			exp := sender.Request{
-				ID:                 ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-				ProjectID:          projectID,
-				SourceRequestLogID: ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-
-				URL:    exampleURL,
-				Method: http.MethodGet,
-				Proto:  sender.HTTPProto20,
-				Header: http.Header{
-					"X-Foo": []string{"bar"},
+			exp := &sender.Request{
+				Id:                 "foobar-sender-req-id",
+				ProjectId:          projectID,
+				SourceRequestLogId: "foobar-req-log-id",
+				HttpRequest: &http.Request{
+					Url:      exampleURL.String(),
+					Method:   http.Method_METHOD_GET,
+					Protocol: http.Protocol_PROTOCOL_HTTP20,
+					Headers: []*http.Header{
+						{
+							Key:   "X-Foo",
+							Value: "bar",
+						},
+					},
+					Body: []byte("foo"),
 				},
-				Body: []byte("foo"),
-				Response: &reqlog.ResponseLog{
-					Proto:      "HTTP/2.0",
+				HttpResponse: &http.Response{
+					Protocol:   http.Protocol_PROTOCOL_HTTP20,
 					Status:     "200 OK",
 					StatusCode: 200,
-					Header: http.Header{
-						"X-Yolo": []string{"swag"},
+					Headers: []*http.Header{
+						{
+							Key:   "X-Yolo",
+							Value: "swag",
+						},
 					},
 					Body: []byte("bar"),
 				},
@@ -95,44 +100,18 @@ func TestFindRequestByID(t *testing.T) {
 				t.Fatalf("unexpected error (expected: nil, got: %v)", err)
 			}
 
-			got, err := db.FindSenderRequestByID(context.Background(), exp.ProjectID, exp.ID)
+			got, err := db.FindSenderRequestByID(context.Background(), projectID, exp.Id)
 			if err != nil {
 				t.Fatalf("unexpected error (expected: nil, got: %v)", err)
 			}
 
-			if diff := cmp.Diff(exp, got); diff != "" {
-				t.Fatalf("sender request not equal (-exp, +got):\n%v", diff)
-			}
+			testutil.ProtoDiff(t, "sender request not equal", exp, got, "id")
 		})
 	})
 }
 
 func TestFindSenderRequests(t *testing.T) {
 	t.Parallel()
-
-	t.Run("without project ID in filter", func(t *testing.T) {
-		t.Parallel()
-
-		path := t.TempDir() + "bolt.db"
-		boltDB, err := bbolt.Open(path, 0o600, nil)
-		if err != nil {
-			t.Fatalf("failed to open bolt database: %v", err)
-		}
-		defer boltDB.Close()
-
-		db, err := bolt.DatabaseFromBoltDB(boltDB)
-		if err != nil {
-			t.Fatalf("failed to create database: %v", err)
-		}
-		defer db.Close()
-
-		filter := sender.FindRequestsFilter{}
-
-		_, err = db.FindSenderRequests(context.Background(), filter, nil)
-		if !errors.Is(err, sender.ErrProjectIDMustBeSet) {
-			t.Fatalf("expected `sender.ErrProjectIDMustBeSet`, got: %v", err)
-		}
-	})
 
 	t.Run("returns sender requests and related response logs", func(t *testing.T) {
 		t.Parallel()
@@ -150,48 +129,61 @@ func TestFindSenderRequests(t *testing.T) {
 		}
 		defer db.Close()
 
-		projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		projectID := "foobar-project-id"
 
-		err = db.UpsertProject(context.Background(), proj.Project{
-			ID:       projectID,
-			Name:     "foobar",
-			Settings: proj.Settings{},
+		err = db.UpsertProject(context.Background(), &proj.Project{
+			Id:   projectID,
+			Name: "foobar",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error creating project (expected: nil, got: %v)", err)
 		}
 
-		fixtures := []sender.Request{
+		fixtures := []*sender.Request{
 			{
-				ID:                 ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-				ProjectID:          projectID,
-				SourceRequestLogID: ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-				URL:                exampleURL,
-				Method:             http.MethodPost,
-				Proto:              "HTTP/1.1",
-				Header: http.Header{
-					"X-Foo": []string{"baz"},
+				Id:                 ulid.Make().String(),
+				ProjectId:          projectID,
+				SourceRequestLogId: "foobar-req-log-id-1",
+				HttpRequest: &http.Request{
+					Url:      exampleURL.String(),
+					Method:   http.Method_METHOD_POST,
+					Protocol: http.Protocol_PROTOCOL_HTTP11,
+					Headers: []*http.Header{
+						{
+							Key:   "X-Foo",
+							Value: "baz",
+						},
+					},
+					Body: []byte("foo"),
 				},
-				Body: []byte("foo"),
-				Response: &reqlog.ResponseLog{
-					Proto:      "HTTP/1.1",
+				HttpResponse: &http.Response{
+					Protocol:   http.Protocol_PROTOCOL_HTTP11,
 					Status:     "200 OK",
 					StatusCode: 200,
-					Header: http.Header{
-						"X-Yolo": []string{"swag"},
+					Headers: []*http.Header{
+						{
+							Key:   "X-Yolo",
+							Value: "swag",
+						},
 					},
 					Body: []byte("bar"),
 				},
 			},
 			{
-				ID:                 ulid.MustNew(ulid.Timestamp(time.Now())+100, ulidEntropy),
-				ProjectID:          projectID,
-				SourceRequestLogID: ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-				URL:                exampleURL,
-				Method:             http.MethodGet,
-				Proto:              "HTTP/1.1",
-				Header: http.Header{
-					"X-Foo": []string{"baz"},
+				Id:                 ulid.Make().String(),
+				ProjectId:          projectID,
+				SourceRequestLogId: "foobar-req-log-id-2",
+				HttpRequest: &http.Request{
+					Url:      exampleURL.String(),
+					Method:   http.Method_METHOD_GET,
+					Protocol: http.Protocol_PROTOCOL_HTTP11,
+					Headers: []*http.Header{
+						{
+							Key:   "X-Foo",
+							Value: "baz",
+						},
+					},
+					Body: []byte("foo"),
 				},
 			},
 		}
@@ -204,23 +196,17 @@ func TestFindSenderRequests(t *testing.T) {
 			}
 		}
 
-		filter := sender.FindRequestsFilter{
-			ProjectID: projectID,
-		}
-
-		got, err := db.FindSenderRequests(context.Background(), filter, nil)
+		got, err := db.FindSenderRequests(context.Background(), projectID, nil)
 		if err != nil {
 			t.Fatalf("unexpected error finding sender requests: %v", err)
 		}
 
 		// We expect the found sender requests are *reversed*, e.g. newest first.
-		exp := make([]sender.Request, len(fixtures))
+		exp := make([]*sender.Request, len(fixtures))
 		for i, j := 0, len(fixtures)-1; i < j; i, j = i+1, j-1 {
 			exp[i], exp[j] = fixtures[j], fixtures[i]
 		}
 
-		if diff := cmp.Diff(exp, got); diff != "" {
-			t.Fatalf("sender requests not equal (-exp, +got):\n%v", diff)
-		}
+		testutil.ProtoSlicesDiff(t, "sender requests not equal", exp, got)
 	})
 }

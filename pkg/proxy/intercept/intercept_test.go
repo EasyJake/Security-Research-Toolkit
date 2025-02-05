@@ -3,22 +3,18 @@ package intercept_test
 import (
 	"context"
 	"errors"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 	"go.uber.org/zap"
 
 	"github.com/dstotijn/hetty/pkg/proxy"
 	"github.com/dstotijn/hetty/pkg/proxy/intercept"
 )
-
-//nolint:gosec
-var ulidEntropy = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 func TestRequestModifier(t *testing.T) {
 	t.Parallel()
@@ -33,7 +29,7 @@ func TestRequestModifier(t *testing.T) {
 			ResponsesEnabled: false,
 		})
 
-		reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		reqID := ulid.Make()
 
 		err := svc.ModifyRequest(reqID, nil, nil)
 		if !errors.Is(err, intercept.ErrRequestNotFound) {
@@ -55,7 +51,7 @@ func TestRequestModifier(t *testing.T) {
 		defer cancel()
 
 		req := httptest.NewRequest("GET", "https://example.com/foo", nil)
-		reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		reqID := ulid.Make()
 		*req = *req.WithContext(ctx)
 		*req = *req.WithContext(proxy.WithRequestID(req.Context(), reqID))
 
@@ -82,7 +78,7 @@ func TestRequestModifier(t *testing.T) {
 		req := httptest.NewRequest("GET", "https://example.com/foo", nil)
 		req.Header.Set("X-Foo", "foo")
 
-		reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		reqID := ulid.Make()
 		*req = *req.WithContext(proxy.WithRequestID(req.Context(), reqID))
 
 		modReq := req.Clone(context.Background())
@@ -143,7 +139,7 @@ func TestResponseModifier(t *testing.T) {
 			ResponsesEnabled: true,
 		})
 
-		reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		reqID := ulid.Make()
 
 		err := svc.ModifyResponse(reqID, nil)
 		if !errors.Is(err, intercept.ErrRequestNotFound) {
@@ -165,7 +161,7 @@ func TestResponseModifier(t *testing.T) {
 		defer cancel()
 
 		req := httptest.NewRequest("GET", "https://example.com/foo", nil)
-		reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		reqID := ulid.Make()
 		*req = *req.WithContext(ctx)
 		*req = *req.WithContext(proxy.WithRequestID(req.Context(), reqID))
 
@@ -212,7 +208,7 @@ func TestResponseModifier(t *testing.T) {
 		req := httptest.NewRequest("GET", "https://example.com/foo", nil)
 		req.Header.Set("X-Foo", "foo")
 
-		reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+		reqID := ulid.Make()
 		*req = *req.WithContext(proxy.WithRequestID(req.Context(), reqID))
 
 		res := &http.Response{

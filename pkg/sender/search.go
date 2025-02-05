@@ -5,31 +5,32 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/dstotijn/hetty/pkg/filter"
-	"github.com/dstotijn/hetty/pkg/reqlog"
+	"github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/scope"
 )
 
-var senderReqSearchKeyFns = map[string]func(req Request) string{
-	"req.id":    func(req Request) string { return req.ID.String() },
-	"req.proto": func(req Request) string { return req.Proto },
-	"req.url": func(req Request) string {
-		if req.URL == nil {
+var senderReqSearchKeyFns = map[string]func(req *Request) string{
+	"req.id":     func(req *Request) string { return req.Id },
+	"req.proto":  func(req *Request) string { return req.GetHttpRequest().GetProtocol().String() },
+	"req.url":    func(req *Request) string { return req.GetHttpRequest().GetUrl() },
+	"req.method": func(req *Request) string { return req.GetHttpRequest().GetMethod().String() },
+	"req.body":   func(req *Request) string { return string(req.GetHttpRequest().GetBody()) },
+	"req.timestamp": func(req *Request) string {
+		id, err := ulid.Parse(req.Id)
+		if err != nil {
 			return ""
 		}
-		return req.URL.String()
+		return ulid.Time(id.Time()).String()
 	},
-	"req.method":    func(req Request) string { return req.Method },
-	"req.body":      func(req Request) string { return string(req.Body) },
-	"req.timestamp": func(req Request) string { return ulid.Time(req.ID.Time()).String() },
 }
 
 // TODO: Request and response headers search key functions.
 
 // Matches returns true if the supplied search expression evaluates to true.
-func (req Request) Matches(expr filter.Expression) (bool, error) {
+func (req *Request) Matches(expr filter.Expression) (bool, error) {
 	switch e := expr.(type) {
 	case filter.PrefixExpression:
 		return req.matchPrefixExpr(e)
@@ -42,7 +43,7 @@ func (req Request) Matches(expr filter.Expression) (bool, error) {
 	}
 }
 
-func (req Request) matchPrefixExpr(expr filter.PrefixExpression) (bool, error) {
+func (req *Request) matchPrefixExpr(expr filter.PrefixExpression) (bool, error) {
 	switch expr.Operator {
 	case filter.TokOpNot:
 		match, err := req.Matches(expr.Right)
@@ -56,7 +57,7 @@ func (req Request) matchPrefixExpr(expr filter.PrefixExpression) (bool, error) {
 	}
 }
 
-func (req Request) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
+func (req *Request) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
 	switch expr.Operator {
 	case filter.TokOpAnd:
 		left, err := req.Matches(expr.Left)
@@ -92,7 +93,7 @@ func (req Request) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
 	leftVal := req.getMappedStringLiteral(left.Value)
 
 	if leftVal == "req.headers" {
-		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, req.Header)
+		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, req.GetHttpRequest().GetHeaders())
 		if err != nil {
 			return false, fmt.Errorf("failed to match request HTTP headers: %w", err)
 		}
@@ -100,8 +101,8 @@ func (req Request) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
 		return match, nil
 	}
 
-	if leftVal == "res.headers" && req.Response != nil {
-		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, req.Response.Header)
+	if leftVal == "res.headers" && req.GetHttpResponse() != nil {
+		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, req.GetHttpResponse().GetHeaders())
 		if err != nil {
 			return false, fmt.Errorf("failed to match response HTTP headers: %w", err)
 		}
@@ -152,7 +153,7 @@ func (req Request) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
 	}
 }
 
-func (req Request) getMappedStringLiteral(s string) string {
+func (req *Request) getMappedStringLiteral(s string) string {
 	switch {
 	case strings.HasPrefix(s, "req."):
 		fn, ok := senderReqSearchKeyFns[s]
@@ -160,28 +161,22 @@ func (req Request) getMappedStringLiteral(s string) string {
 			return fn(req)
 		}
 	case strings.HasPrefix(s, "res."):
-		if req.Response == nil {
-			return ""
-		}
-
-		fn, ok := reqlog.ResLogSearchKeyFns[s]
+		fn, ok := http.ResponseSearchKeyFns[s]
 		if ok {
-			return fn(*req.Response)
+			return fn(req.GetHttpResponse())
 		}
 	}
 
 	return s
 }
 
-func (req Request) matchStringLiteral(strLiteral filter.StringLiteral) (bool, error) {
-	for key, values := range req.Header {
-		for _, value := range values {
-			if strings.Contains(
-				strings.ToLower(fmt.Sprintf("%v: %v", key, value)),
-				strings.ToLower(strLiteral.Value),
-			) {
-				return true, nil
-			}
+func (req *Request) matchStringLiteral(strLiteral filter.StringLiteral) (bool, error) {
+	for _, header := range req.GetHttpRequest().GetHeaders() {
+		if strings.Contains(
+			strings.ToLower(fmt.Sprintf("%v: %v", header.Key, header.Value)),
+			strings.ToLower(strLiteral.Value),
+		) {
+			return true, nil
 		}
 	}
 
@@ -194,54 +189,47 @@ func (req Request) matchStringLiteral(strLiteral filter.StringLiteral) (bool, er
 		}
 	}
 
-	if req.Response != nil {
-		for key, values := range req.Response.Header {
-			for _, value := range values {
-				if strings.Contains(
-					strings.ToLower(fmt.Sprintf("%v: %v", key, value)),
-					strings.ToLower(strLiteral.Value),
-				) {
-					return true, nil
-				}
-			}
+	for _, header := range req.GetHttpResponse().GetHeaders() {
+		if strings.Contains(
+			strings.ToLower(fmt.Sprintf("%v: %v", header.Key, header.Value)),
+			strings.ToLower(strLiteral.Value),
+		) {
+			return true, nil
 		}
+	}
 
-		for _, fn := range reqlog.ResLogSearchKeyFns {
-			if strings.Contains(
-				strings.ToLower(fn(*req.Response)),
-				strings.ToLower(strLiteral.Value),
-			) {
-				return true, nil
-			}
+	for _, fn := range http.ResponseSearchKeyFns {
+		if strings.Contains(
+			strings.ToLower(fn(req.GetHttpResponse())),
+			strings.ToLower(strLiteral.Value),
+		) {
+			return true, nil
 		}
 	}
 
 	return false, nil
 }
 
-func (req Request) MatchScope(s *scope.Scope) bool {
+func (req *Request) MatchScope(s *scope.Scope) bool {
 	for _, rule := range s.Rules() {
-		if rule.URL != nil && req.URL != nil {
-			if matches := rule.URL.MatchString(req.URL.String()); matches {
+		if url := req.GetHttpRequest().GetUrl(); rule.URL != nil && url != "" {
+			if matches := rule.URL.MatchString(url); matches {
 				return true
 			}
 		}
 
-		for key, values := range req.Header {
+		for _, headers := range req.GetHttpRequest().GetHeaders() {
 			var keyMatches, valueMatches bool
 
 			if rule.Header.Key != nil {
-				if matches := rule.Header.Key.MatchString(key); matches {
+				if matches := rule.Header.Key.MatchString(headers.Key); matches {
 					keyMatches = true
 				}
 			}
 
 			if rule.Header.Value != nil {
-				for _, value := range values {
-					if matches := rule.Header.Value.MatchString(value); matches {
-						valueMatches = true
-						break
-					}
+				if matches := rule.Header.Value.MatchString(headers.Value); matches {
+					valueMatches = true
 				}
 			}
 			// When only key or value is set, match on whatever is set.
@@ -257,7 +245,7 @@ func (req Request) MatchScope(s *scope.Scope) bool {
 		}
 
 		if rule.Body != nil {
-			if matches := rule.Body.Match(req.Body); matches {
+			if matches := rule.Body.Match(req.GetHttpRequest().GetBody()); matches {
 				return true
 			}
 		}

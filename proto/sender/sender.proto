@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package sender;
+
+import "http/http.proto";
+
+option go_package = "github.com/dstotijn/hetty/proto/sender";
+
+message Request {
+  string id = 1;
+  string project_id = 2;
+  string source_request_log_id = 3;
+  hetty.http.v1.Request http_request = 4;
+  hetty.http.v1.Response http_response = 10;
+}
+
+message RequestsFilter {
+  bool only_in_scope = 1;
+  string search_expr = 2;
+}
+
+message GetRequestByIDRequest {
+  string request_id = 1;
+}
+
+message GetRequestByIDResponse {
+  Request request = 1;
+}
+
+message ListRequestsRequest {}
+
+message ListRequestsResponse {
+  repeated Request requests = 1;
+}
+
+message CloneFromRequestLogRequest {
+  string request_log_id = 1;
+}
+
+message CloneFromRequestLogResponse {
+  Request request = 1;
+}
+
+message SendRequestRequest {
+  string request_id = 1;
+}
+
+message SendRequestResponse {
+  Request request = 1;
+}
+
+message DeleteRequestsRequest {}
+
+message DeleteRequestsResponse {}
+
+message CreateOrUpdateRequestRequest {
+  Request request = 1;
+}
+
+message CreateOrUpdateRequestResponse {
+  Request request = 1;
+}
+
+message SetRequestsFilterRequest {
+  RequestsFilter filter = 1;
+}
+
+message SetRequestsFilterResponse {}
+
+message GetRequestsFilterRequest {}
+
+message GetRequestsFilterResponse {
+  RequestsFilter filter = 1;
+}
+
+service SenderService {
+  rpc GetRequestByID(GetRequestByIDRequest) returns (GetRequestByIDResponse) {}
+  rpc ListRequests(ListRequestsRequest) returns (ListRequestsResponse) {}
+  rpc SetRequestsFilter(SetRequestsFilterRequest) returns (SetRequestsFilterResponse) {}
+  rpc GetRequestsFilter(GetRequestsFilterRequest) returns (GetRequestsFilterResponse) {}
+  rpc CreateOrUpdateRequest(CreateOrUpdateRequestRequest) returns (CreateOrUpdateRequestResponse) {}
+  rpc CloneFromRequestLog(CloneFromRequestLogRequest) returns (CloneFromRequestLogResponse) {}
+  rpc SendRequest(SendRequestRequest) returns (SendRequestResponse) {}
+  rpc DeleteRequests(DeleteRequestsRequest) returns (DeleteRequestsResponse) {}
+}

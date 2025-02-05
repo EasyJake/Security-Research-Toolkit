@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package hetty.reqlog.v1;
+
+import "http/http.proto";
+
+option go_package = "github.com/dstotijn/hetty/pkg/reqlog";
+
+message HttpRequestLog {
+  string id = 1;
+  string project_id = 2;
+  string remote_ip = 3;
+  hetty.http.v1.Request request = 4;
+  hetty.http.v1.Response response = 5;
+}
+
+message GetHttpRequestLogRequest {
+  string id = 1;
+}
+
+message GetHttpRequestLogResponse {
+  HttpRequestLog http_request_log = 1;
+}
+
+message ListHttpRequestLogsRequest {}
+
+message ListHttpRequestLogsResponse {
+  repeated HttpRequestLog http_request_logs = 1;
+}
+
+message RequestLogsFilter {
+  bool only_in_scope = 1;
+  string search_expr = 2;
+}
+
+message ClearHttpRequestLogsRequest {}
+
+message ClearHttpRequestLogsResponse {}
+
+service HttpRequestLogService {
+  rpc GetHttpRequestLog(GetHttpRequestLogRequest) returns (GetHttpRequestLogResponse) {}
+  rpc ListHttpRequestLogs(ListHttpRequestLogsRequest) returns (ListHttpRequestLogsResponse) {}
+  rpc ClearHttpRequestLogs(ClearHttpRequestLogsRequest) returns (ClearHttpRequestLogsResponse) {}
+}

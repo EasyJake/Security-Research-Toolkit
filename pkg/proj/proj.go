@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"regexp"
 	"sync"
-	"time"
 
-	"github.com/oklog/ulid"
+	connect "connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/dstotijn/hetty/pkg/filter"
 	"github.com/dstotijn/hetty/pkg/proxy/intercept"
@@ -18,25 +17,14 @@ import (
 	"github.com/dstotijn/hetty/pkg/sender"
 )
 
-//nolint:gosec
-var ulidEntropy = rand.New(rand.NewSource(time.Now().UnixNano()))
-
 type Service struct {
 	repo            Repository
 	interceptSvc    *intercept.Service
 	reqLogSvc       *reqlog.Service
 	senderSvc       *sender.Service
 	scope           *scope.Scope
-	activeProjectID ulid.ULID
+	activeProjectID string
 	mu              sync.RWMutex
-}
-
-type Project struct {
-	ID       ulid.ULID
-	Name     string
-	Settings Settings
-
-	isActive bool
 }
 
 type Settings struct {
@@ -87,216 +75,324 @@ func NewService(cfg Config) (*Service, error) {
 	}, nil
 }
 
-func (svc *Service) CreateProject(ctx context.Context, name string) (Project, error) {
-	if !nameRegexp.MatchString(name) {
-		return Project{}, ErrInvalidName
+func (svc *Service) CreateProject(ctx context.Context, req *connect.Request[CreateProjectRequest]) (*connect.Response[CreateProjectResponse], error) {
+	if !nameRegexp.MatchString(req.Msg.Name) {
+		return nil, ErrInvalidName
 	}
 
-	project := Project{
-		ID:   ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy),
-		Name: name,
+	project := &Project{
+		Id:   ulid.Make().String(),
+		Name: req.Msg.Name,
 	}
 
 	err := svc.repo.UpsertProject(ctx, project)
 	if err != nil {
-		return Project{}, fmt.Errorf("proj: could not create project: %w", err)
+		return nil, fmt.Errorf("proj: could not create project: %w", err)
 	}
 
-	return project, nil
+	return &connect.Response[CreateProjectResponse]{
+		Msg: &CreateProjectResponse{
+			Project: project,
+		},
+	}, nil
 }
 
 // CloseProject closes the currently open project (if there is one).
-func (svc *Service) CloseProject() error {
+func (svc *Service) CloseProject(ctx context.Context, _ *connect.Request[CloseProjectRequest]) (*connect.Response[CloseProjectResponse], error) {
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
 
-	if svc.activeProjectID.Compare(ulid.ULID{}) == 0 {
-		return nil
+	if svc.activeProjectID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrNoProject)
 	}
 
-	svc.activeProjectID = ulid.ULID{}
-	svc.reqLogSvc.SetActiveProjectID(ulid.ULID{})
+	svc.activeProjectID = ""
+	svc.reqLogSvc.SetActiveProjectID("")
 	svc.reqLogSvc.SetBypassOutOfScopeRequests(false)
-	svc.reqLogSvc.SetFindReqsFilter(reqlog.FindRequestsFilter{})
+	svc.reqLogSvc.SetRequestLogsFilter(nil)
 	svc.interceptSvc.UpdateSettings(intercept.Settings{
 		RequestsEnabled:  false,
 		ResponsesEnabled: false,
 		RequestFilter:    nil,
 		ResponseFilter:   nil,
 	})
-	svc.senderSvc.SetActiveProjectID(ulid.ULID{})
-	svc.senderSvc.SetFindReqsFilter(sender.FindRequestsFilter{})
+	svc.senderSvc.SetActiveProjectID("")
 	svc.scope.SetRules(nil)
 
-	return nil
+	return &connect.Response[CloseProjectResponse]{}, nil
 }
 
 // DeleteProject removes a project from the repository.
-func (svc *Service) DeleteProject(ctx context.Context, projectID ulid.ULID) error {
-	if svc.activeProjectID.Compare(projectID) == 0 {
-		return fmt.Errorf("proj: project (%v) is active", projectID.String())
+func (svc *Service) DeleteProject(ctx context.Context, req *connect.Request[DeleteProjectRequest]) (*connect.Response[DeleteProjectResponse], error) {
+	if svc.activeProjectID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, ErrNoProject)
 	}
 
-	if err := svc.repo.DeleteProject(ctx, projectID); err != nil {
-		return fmt.Errorf("proj: could not delete project: %w", err)
+	if err := svc.repo.DeleteProject(ctx, req.Msg.ProjectId); err != nil {
+		return nil, fmt.Errorf("proj: could not delete project: %w", err)
 	}
 
-	return nil
+	return &connect.Response[DeleteProjectResponse]{}, nil
 }
 
 // OpenProject sets a project as the currently active project.
-func (svc *Service) OpenProject(ctx context.Context, projectID ulid.ULID) (Project, error) {
+func (svc *Service) OpenProject(ctx context.Context, req *connect.Request[OpenProjectRequest]) (*connect.Response[OpenProjectResponse], error) {
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
 
-	project, err := svc.repo.FindProjectByID(ctx, projectID)
+	p, err := svc.repo.FindProjectByID(ctx, req.Msg.ProjectId)
+	if errors.Is(err, ErrProjectNotFound) {
+		return nil, connect.NewError(connect.CodeNotFound, ErrProjectNotFound)
+	}
 	if err != nil {
-		return Project{}, fmt.Errorf("proj: failed to get project: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proj: failed to find project: %w", err))
 	}
 
-	svc.activeProjectID = project.ID
+	svc.activeProjectID = p.Id
+
+	interceptSettings := intercept.Settings{
+		RequestsEnabled:  p.InterceptRequests,
+		ResponsesEnabled: p.InterceptResponses,
+	}
+
+	if p.InterceptRequestFilterExpr != "" {
+		expr, err := filter.ParseQuery(p.InterceptRequestFilterExpr)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proj: failed to parse intercept request filter: %w", err))
+		}
+		interceptSettings.RequestFilter = expr
+	}
+
+	if p.InterceptResponseFilterExpr != "" {
+		expr, err := filter.ParseQuery(p.InterceptResponseFilterExpr)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proj: failed to parse intercept response filter: %w", err))
+		}
+		interceptSettings.ResponseFilter = expr
+	}
 
 	// Request log settings.
-	svc.reqLogSvc.SetFindReqsFilter(reqlog.FindRequestsFilter{
-		ProjectID:   project.ID,
-		OnlyInScope: project.Settings.ReqLogOnlyFindInScope,
-		SearchExpr:  project.Settings.ReqLogSearchExpr,
-	})
-	svc.reqLogSvc.SetBypassOutOfScopeRequests(project.Settings.ReqLogBypassOutOfScope)
-	svc.reqLogSvc.SetActiveProjectID(project.ID)
+	svc.reqLogSvc.SetActiveProjectID(p.Id)
+	svc.reqLogSvc.SetBypassOutOfScopeRequests(p.ReqLogBypassOutOfScope)
+	svc.reqLogSvc.SetRequestLogsFilter(p.ReqLogFilter)
 
 	// Intercept settings.
-	svc.interceptSvc.UpdateSettings(intercept.Settings{
-		RequestsEnabled:  project.Settings.InterceptRequests,
-		ResponsesEnabled: project.Settings.InterceptResponses,
-		RequestFilter:    project.Settings.InterceptRequestFilter,
-		ResponseFilter:   project.Settings.InterceptResponseFilter,
-	})
+	svc.interceptSvc.UpdateSettings(interceptSettings)
 
 	// Sender settings.
-	svc.senderSvc.SetActiveProjectID(project.ID)
-	svc.senderSvc.SetFindReqsFilter(sender.FindRequestsFilter{
-		ProjectID:   project.ID,
-		OnlyInScope: project.Settings.SenderOnlyFindInScope,
-		SearchExpr:  project.Settings.SenderSearchExpr,
+	svc.senderSvc.SetActiveProjectID(p.Id)
+	svc.senderSvc.SetRequestsFilter(&sender.RequestsFilter{
+		OnlyInScope: p.SenderOnlyFindInScope,
+		SearchExpr:  p.SenderSearchExpr,
 	})
 
 	// Scope settings.
-	svc.scope.SetRules(project.Settings.ScopeRules)
-
-	return project, nil
-}
-
-func (svc *Service) ActiveProject(ctx context.Context) (Project, error) {
-	activeProjectID := svc.activeProjectID
-	if activeProjectID.Compare(ulid.ULID{}) == 0 {
-		return Project{}, ErrNoProject
-	}
-
-	project, err := svc.repo.FindProjectByID(ctx, activeProjectID)
+	scopeRules, err := p.ParseScopeRules()
 	if err != nil {
-		return Project{}, fmt.Errorf("proj: failed to get active project: %w", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("proj: failed to parse scope rules: %w", err))
+	}
+	svc.scope.SetRules(scopeRules)
+
+	p.IsActive = true
+
+	return &connect.Response[OpenProjectResponse]{
+		Msg: &OpenProjectResponse{
+			Project: p,
+		},
+	}, nil
+}
+
+func (svc *Service) GetActiveProject(ctx context.Context, _ *connect.Request[GetActiveProjectRequest]) (*connect.Response[GetActiveProjectResponse], error) {
+	project, err := svc.activeProject(ctx)
+	if errors.Is(err, ErrNoProject) {
+		return nil, connect.NewError(connect.CodeNotFound, err)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	project.isActive = true
+	project.IsActive = true
+
+	return &connect.Response[GetActiveProjectResponse]{
+		Msg: &GetActiveProjectResponse{
+			Project: project,
+		},
+	}, nil
+}
+
+func (svc *Service) activeProject(ctx context.Context) (*Project, error) {
+	if svc.activeProjectID == "" {
+		return nil, ErrNoProject
+	}
+
+	project, err := svc.repo.FindProjectByID(ctx, svc.activeProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("proj: failed to get active project: %w", err)
+	}
 
 	return project, nil
 }
 
-func (svc *Service) Projects(ctx context.Context) ([]Project, error) {
+func (svc *Service) ListProjects(ctx context.Context, _ *connect.Request[ListProjectsRequest]) (*connect.Response[ListProjectsResponse], error) {
 	projects, err := svc.repo.Projects(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("proj: could not get projects: %w", err)
 	}
 
-	return projects, nil
+	for _, project := range projects {
+		if svc.IsProjectActive(project.Id) {
+			project.IsActive = true
+		}
+	}
+
+	return &connect.Response[ListProjectsResponse]{
+		Msg: &ListProjectsResponse{
+			Projects: projects,
+		},
+	}, nil
 }
 
 func (svc *Service) Scope() *scope.Scope {
 	return svc.scope
 }
 
-func (svc *Service) SetScopeRules(ctx context.Context, rules []scope.Rule) error {
-	project, err := svc.ActiveProject(ctx)
+func (svc *Service) SetScopeRules(ctx context.Context, req *connect.Request[SetScopeRulesRequest]) (*connect.Response[SetScopeRulesResponse], error) {
+	p, err := svc.activeProject(ctx)
+	if errors.Is(err, ErrNoProject) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	p.ScopeRules = req.Msg.Rules
+
+	err = svc.repo.UpsertProject(ctx, p)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proj: failed to update project: %w", err))
+	}
+
+	scopeRules, err := p.ParseScopeRules()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("proj: failed to parse scope rules: %w", err))
+	}
+
+	svc.scope.SetRules(scopeRules)
+
+	return &connect.Response[SetScopeRulesResponse]{}, nil
+}
+
+func (p *Project) ParseScopeRules() ([]scope.Rule, error) {
+	var err error
+	scopeRules := make([]scope.Rule, len(p.ScopeRules))
+
+	for i, rule := range p.ScopeRules {
+		scopeRules[i] = scope.Rule{}
+		if rule.UrlRegexp != "" {
+			scopeRules[i].URL, err = regexp.Compile(rule.UrlRegexp)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse scope rule's URL field: %w", err)
+			}
+		}
+		if rule.HeaderKeyRegexp != "" {
+			scopeRules[i].Header.Key, err = regexp.Compile(rule.HeaderKeyRegexp)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse scope rule's header key field: %w", err)
+			}
+		}
+		if rule.HeaderValueRegexp != "" {
+			scopeRules[i].Header.Value, err = regexp.Compile(rule.HeaderValueRegexp)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse scope rule's header value field: %w", err)
+			}
+		}
+		if rule.BodyRegexp != "" {
+			scopeRules[i].Body, err = regexp.Compile(rule.BodyRegexp)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse scope rule's body field: %w", err)
+			}
+		}
+	}
+
+	return scopeRules, nil
+}
+
+func (svc *Service) SetRequestLogsFilter(ctx context.Context, req *connect.Request[SetRequestLogsFilterRequest]) (*connect.Response[SetRequestLogsFilterResponse], error) {
+	project, err := svc.activeProject(ctx)
+	if errors.Is(err, ErrNoProject) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	project.ReqLogFilter = req.Msg.Filter
+
+	err = svc.repo.UpsertProject(ctx, project)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proj: failed to update project: %w", err))
+	}
+
+	svc.reqLogSvc.SetRequestLogsFilter(req.Msg.Filter)
+
+	return &connect.Response[SetRequestLogsFilterResponse]{}, nil
+}
+
+func (svc *Service) SetSenderRequestFindFilter(ctx context.Context, filter *sender.RequestsFilter) error {
+	project, err := svc.activeProject(ctx)
 	if err != nil {
 		return err
 	}
 
-	project.Settings.ScopeRules = rules
+	project.SenderOnlyFindInScope = filter.OnlyInScope
+	project.SenderSearchExpr = filter.SearchExpr
 
 	err = svc.repo.UpsertProject(ctx, project)
 	if err != nil {
 		return fmt.Errorf("proj: failed to update project: %w", err)
 	}
 
-	svc.scope.SetRules(rules)
+	svc.senderSvc.SetRequestsFilter(filter)
 
 	return nil
 }
 
-func (svc *Service) SetRequestLogFindFilter(ctx context.Context, filter reqlog.FindRequestsFilter) error {
-	project, err := svc.ActiveProject(ctx)
+func (svc *Service) IsProjectActive(projectID string) bool {
+	return projectID == svc.activeProjectID
+}
+
+func (svc *Service) UpdateInterceptSettings(ctx context.Context, req *connect.Request[UpdateInterceptSettingsRequest]) (*connect.Response[UpdateInterceptSettingsResponse], error) {
+	project, err := svc.activeProject(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	filter.ProjectID = project.ID
-
-	project.Settings.ReqLogOnlyFindInScope = filter.OnlyInScope
-	project.Settings.ReqLogSearchExpr = filter.SearchExpr
+	project.InterceptRequests = req.Msg.RequestsEnabled
+	project.InterceptResponses = req.Msg.ResponsesEnabled
+	project.InterceptRequestFilterExpr = req.Msg.RequestFilterExpr
+	project.InterceptResponseFilterExpr = req.Msg.ResponseFilterExpr
 
 	err = svc.repo.UpsertProject(ctx, project)
 	if err != nil {
-		return fmt.Errorf("proj: failed to update project: %w", err)
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proj: failed to update project: %w", err))
 	}
 
-	svc.reqLogSvc.SetFindReqsFilter(filter)
-
-	return nil
-}
-
-func (svc *Service) SetSenderRequestFindFilter(ctx context.Context, filter sender.FindRequestsFilter) error {
-	project, err := svc.ActiveProject(ctx)
+	reqFilterExpr, err := filter.ParseQuery(req.Msg.RequestFilterExpr)
 	if err != nil {
-		return err
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("proj: failed to parse intercept request filter: %w", err))
 	}
 
-	filter.ProjectID = project.ID
-
-	project.Settings.SenderOnlyFindInScope = filter.OnlyInScope
-	project.Settings.SenderSearchExpr = filter.SearchExpr
-
-	err = svc.repo.UpsertProject(ctx, project)
+	respFilterExpr, err := filter.ParseQuery(req.Msg.ResponseFilterExpr)
 	if err != nil {
-		return fmt.Errorf("proj: failed to update project: %w", err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("proj: failed to parse intercept response filter: %w", err))
 	}
 
-	svc.senderSvc.SetFindReqsFilter(filter)
+	svc.interceptSvc.UpdateSettings(intercept.Settings{
+		RequestsEnabled:  req.Msg.RequestsEnabled,
+		ResponsesEnabled: req.Msg.ResponsesEnabled,
+		RequestFilter:    reqFilterExpr,
+		ResponseFilter:   respFilterExpr,
+	})
 
-	return nil
-}
-
-func (svc *Service) IsProjectActive(projectID ulid.ULID) bool {
-	return projectID.Compare(svc.activeProjectID) == 0
-}
-
-func (svc *Service) UpdateInterceptSettings(ctx context.Context, settings intercept.Settings) error {
-	project, err := svc.ActiveProject(ctx)
-	if err != nil {
-		return err
-	}
-
-	project.Settings.InterceptRequests = settings.RequestsEnabled
-	project.Settings.InterceptResponses = settings.ResponsesEnabled
-	project.Settings.InterceptRequestFilter = settings.RequestFilter
-	project.Settings.InterceptResponseFilter = settings.ResponseFilter
-
-	err = svc.repo.UpsertProject(ctx, project)
-	if err != nil {
-		return fmt.Errorf("proj: failed to update project: %w", err)
-	}
-
-	svc.interceptSvc.UpdateSettings(settings)
-
-	return nil
+	return &connect.Response[UpdateInterceptSettingsResponse]{}, nil
 }

@@ -3,26 +3,23 @@ package reqlog_test
 import (
 	"context"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 	"go.etcd.io/bbolt"
 
 	"github.com/dstotijn/hetty/pkg/db/bolt"
+	httppb "github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/proj"
 	"github.com/dstotijn/hetty/pkg/proxy"
 	"github.com/dstotijn/hetty/pkg/reqlog"
 	"github.com/dstotijn/hetty/pkg/scope"
+	"github.com/dstotijn/hetty/pkg/testutil"
 )
-
-//nolint:gosec
-var ulidEntropy = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 //nolint:paralleltest
 func TestRequestModifier(t *testing.T) {
@@ -39,9 +36,9 @@ func TestRequestModifier(t *testing.T) {
 	}
 	defer db.Close()
 
-	projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-	err = db.UpsertProject(context.Background(), proj.Project{
-		ID: projectID,
+	projectID := ulid.Make().String()
+	err = db.UpsertProject(context.Background(), &proj.Project{
+		Id: projectID,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error upserting project: %v", err)
@@ -58,34 +55,39 @@ func TestRequestModifier(t *testing.T) {
 	}
 	reqModFn := svc.RequestModifier(next)
 	req := httptest.NewRequest("GET", "https://example.com/", strings.NewReader("bar"))
-	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+	req.Header.Add("X-Yolo", "swag")
+	reqID := ulid.Make()
 	req = req.WithContext(proxy.WithRequestID(req.Context(), reqID))
 
 	reqModFn(req)
 
 	t.Run("request log was stored in repository", func(t *testing.T) {
-		exp := reqlog.RequestLog{
-			ID:        reqID,
-			ProjectID: svc.ActiveProjectID(),
-			Method:    req.Method,
-			URL:       req.URL,
-			Proto:     req.Proto,
-			Header:    req.Header,
-			Body:      []byte("modified body"),
+		exp := &reqlog.HttpRequestLog{
+			Id:        reqID.String(),
+			ProjectId: svc.ActiveProjectID(),
+			Request: &httppb.Request{
+				Url:      "https://example.com/",
+				Method:   httppb.Method_METHOD_GET,
+				Protocol: httppb.Protocol_PROTOCOL_HTTP11,
+				Headers: []*httppb.Header{
+					{
+						Key:   "X-Yolo",
+						Value: "swag",
+					},
+				},
+				Body: []byte("modified body"),
+			},
 		}
 
-		got, err := svc.FindRequestLogByID(context.Background(), reqID)
+		got, err := db.FindRequestLogByID(context.Background(), svc.ActiveProjectID(), reqID.String())
 		if err != nil {
 			t.Fatalf("failed to find request by id: %v", err)
 		}
 
-		if diff := cmp.Diff(exp, got); diff != "" {
-			t.Fatalf("request log not equal (-exp, +got):\n%v", diff)
-		}
+		testutil.ProtoDiff(t, "request log not equal", exp, got)
 	})
 }
 
-//nolint:paralleltest
 func TestResponseModifier(t *testing.T) {
 	path := t.TempDir() + "bolt.db"
 	boltDB, err := bbolt.Open(path, 0o600, nil)
@@ -100,9 +102,9 @@ func TestResponseModifier(t *testing.T) {
 	}
 	defer db.Close()
 
-	projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-	err = db.UpsertProject(context.Background(), proj.Project{
-		ID: projectID,
+	projectID := "foobar-project-id"
+	err = db.UpsertProject(context.Background(), &proj.Project{
+		Id: projectID,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error upserting project: %v", err)
@@ -120,39 +122,44 @@ func TestResponseModifier(t *testing.T) {
 	resModFn := svc.ResponseModifier(next)
 
 	req := httptest.NewRequest("GET", "https://example.com/", strings.NewReader("bar"))
-	reqLogID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+	reqLogID := ulid.Make()
 	req = req.WithContext(context.WithValue(req.Context(), reqlog.ReqLogIDKey, reqLogID))
 
-	err = db.StoreRequestLog(context.Background(), reqlog.RequestLog{
-		ID:        reqLogID,
-		ProjectID: projectID,
+	err = db.StoreRequestLog(context.Background(), &reqlog.HttpRequestLog{
+		Id:        reqLogID.String(),
+		ProjectId: projectID,
 	})
 	if err != nil {
 		t.Fatalf("failed to store request log: %v", err)
 	}
 
 	res := &http.Response{
-		Request: req,
-		Body:    io.NopCloser(strings.NewReader("bar")),
+		Request:    req,
+		Proto:      "HTTP/1.1",
+		Status:     "200 OK",
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("bar")),
 	}
 
 	if err := resModFn(res); err != nil {
 		t.Fatalf("unexpected error (expected: nil, got: %v)", err)
 	}
 
-	t.Run("request log was stored in repository", func(t *testing.T) {
-		// Dirty (but simple) wait for other goroutine to finish calling repository.
-		time.Sleep(10 * time.Millisecond)
+	// Dirty (but simple) wait for other goroutine to finish calling repository.
+	time.Sleep(10 * time.Millisecond)
 
-		got, err := svc.FindRequestLogByID(context.Background(), reqLogID)
-		if err != nil {
-			t.Fatalf("failed to find request by id: %v", err)
-		}
+	got, err := db.FindRequestLogByID(context.Background(), svc.ActiveProjectID(), reqLogID.String())
+	if err != nil {
+		t.Fatalf("failed to find request by id: %v", err)
+	}
 
-		t.Run("ran next modifier first, before calling repository", func(t *testing.T) {
-			if exp := "modified body"; exp != string(got.Response.Body) {
-				t.Fatalf("incorrect `ResponseLog.Body` value (expected: %v, got: %v)", exp, string(got.Response.Body))
-			}
-		})
-	})
+	exp := &httppb.Response{
+		Protocol:   httppb.Protocol_PROTOCOL_HTTP11,
+		Status:     "200 OK",
+		StatusCode: 200,
+		Headers:    []*httppb.Header{},
+		Body:       []byte("modified body"),
+	}
+
+	testutil.ProtoDiff(t, "response not equal", exp, got.GetResponse())
 }

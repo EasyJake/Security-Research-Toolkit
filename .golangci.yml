@@ -24,7 +24,7 @@ linters:
     - maligned
     - nilnil
     - nlreturn
-    - scopelint 
+    - scopelint
     - testpackage
     - varnamelen
     - wrapcheck
@@ -35,19 +35,19 @@ linters-settings:
   godot:
     capital: true
   ireturn:
-    allow: "error,empty,anon,stdlib,.*(or|er)$,github.com/99designs/gqlgen/graphql.Marshaler,github.com/dstotijn/hetty/pkg/api.QueryResolver,github.com/dstotijn/hetty/pkg/filter.Expression"
-    
+    allow: "error,empty,anon,stdlib,.*(or|er)$,github.com/dstotijn/hetty/pkg/filter.Expression"
+
 issues:
   exclude-rules:
     - linters:
-      - gosec
+        - gosec
       # Ignore SHA1 usage.
       text: "G(401|505):"
     - linters:
-      - wsl
+        - wsl
       # Ignore cuddled defer statements.
       text: "only one cuddle assignment allowed before defer statement"
     - linters:
-      - nlreturn
+        - nlreturn
       # Ignore `break` without leading blank line.
       text: "break with no blank line before"

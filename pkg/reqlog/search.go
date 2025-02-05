@@ -3,40 +3,34 @@ package reqlog
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/dstotijn/hetty/pkg/filter"
+	"github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/scope"
 )
 
-var reqLogSearchKeyFns = map[string]func(rl RequestLog) string{
-	"req.id":    func(rl RequestLog) string { return rl.ID.String() },
-	"req.proto": func(rl RequestLog) string { return rl.Proto },
-	"req.url": func(rl RequestLog) string {
-		if rl.URL == nil {
+var reqLogSearchKeyFns = map[string]func(rl *HttpRequestLog) string{
+	"req.id":     func(rl *HttpRequestLog) string { return rl.GetId() },
+	"req.proto":  func(rl *HttpRequestLog) string { return rl.GetRequest().GetProtocol().String() },
+	"req.url":    func(rl *HttpRequestLog) string { return rl.GetRequest().GetUrl() },
+	"req.method": func(rl *HttpRequestLog) string { return rl.GetRequest().GetMethod().String() },
+	"req.body":   func(rl *HttpRequestLog) string { return string(rl.GetRequest().GetBody()) },
+	"req.timestamp": func(rl *HttpRequestLog) string {
+		id, err := ulid.Parse(rl.GetId())
+		if err != nil {
 			return ""
 		}
-		return rl.URL.String()
+		return ulid.Time(id.Time()).String()
 	},
-	"req.method":    func(rl RequestLog) string { return rl.Method },
-	"req.body":      func(rl RequestLog) string { return string(rl.Body) },
-	"req.timestamp": func(rl RequestLog) string { return ulid.Time(rl.ID.Time()).String() },
-}
-
-var ResLogSearchKeyFns = map[string]func(rl ResponseLog) string{
-	"res.proto":        func(rl ResponseLog) string { return rl.Proto },
-	"res.statusCode":   func(rl ResponseLog) string { return strconv.Itoa(rl.StatusCode) },
-	"res.statusReason": func(rl ResponseLog) string { return rl.Status },
-	"res.body":         func(rl ResponseLog) string { return string(rl.Body) },
 }
 
 // TODO: Request and response headers search key functions.
 
 // Matches returns true if the supplied search expression evaluates to true.
-func (reqLog RequestLog) Matches(expr filter.Expression) (bool, error) {
+func (reqLog *HttpRequestLog) Matches(expr filter.Expression) (bool, error) {
 	switch e := expr.(type) {
 	case filter.PrefixExpression:
 		return reqLog.matchPrefixExpr(e)
@@ -49,7 +43,7 @@ func (reqLog RequestLog) Matches(expr filter.Expression) (bool, error) {
 	}
 }
 
-func (reqLog RequestLog) matchPrefixExpr(expr filter.PrefixExpression) (bool, error) {
+func (reqLog *HttpRequestLog) matchPrefixExpr(expr filter.PrefixExpression) (bool, error) {
 	switch expr.Operator {
 	case filter.TokOpNot:
 		match, err := reqLog.Matches(expr.Right)
@@ -63,7 +57,7 @@ func (reqLog RequestLog) matchPrefixExpr(expr filter.PrefixExpression) (bool, er
 	}
 }
 
-func (reqLog RequestLog) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
+func (reqLog *HttpRequestLog) matchInfixExpr(expr filter.InfixExpression) (bool, error) {
 	switch expr.Operator {
 	case filter.TokOpAnd:
 		left, err := reqLog.Matches(expr.Left)
@@ -99,7 +93,7 @@ func (reqLog RequestLog) matchInfixExpr(expr filter.InfixExpression) (bool, erro
 	leftVal := reqLog.getMappedStringLiteral(left.Value)
 
 	if leftVal == "req.headers" {
-		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, reqLog.Header)
+		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, reqLog.Request.Headers)
 		if err != nil {
 			return false, fmt.Errorf("failed to match request HTTP headers: %w", err)
 		}
@@ -108,7 +102,7 @@ func (reqLog RequestLog) matchInfixExpr(expr filter.InfixExpression) (bool, erro
 	}
 
 	if leftVal == "res.headers" && reqLog.Response != nil {
-		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, reqLog.Response.Header)
+		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, reqLog.Response.Headers)
 		if err != nil {
 			return false, fmt.Errorf("failed to match response HTTP headers: %w", err)
 		}
@@ -159,7 +153,7 @@ func (reqLog RequestLog) matchInfixExpr(expr filter.InfixExpression) (bool, erro
 	}
 }
 
-func (reqLog RequestLog) getMappedStringLiteral(s string) string {
+func (reqLog *HttpRequestLog) getMappedStringLiteral(s string) string {
 	switch {
 	case strings.HasPrefix(s, "req."):
 		fn, ok := reqLogSearchKeyFns[s]
@@ -167,28 +161,22 @@ func (reqLog RequestLog) getMappedStringLiteral(s string) string {
 			return fn(reqLog)
 		}
 	case strings.HasPrefix(s, "res."):
-		if reqLog.Response == nil {
-			return ""
-		}
-
-		fn, ok := ResLogSearchKeyFns[s]
+		fn, ok := http.ResponseSearchKeyFns[s]
 		if ok {
-			return fn(*reqLog.Response)
+			return fn(reqLog.GetResponse())
 		}
 	}
 
 	return s
 }
 
-func (reqLog RequestLog) matchStringLiteral(strLiteral filter.StringLiteral) (bool, error) {
-	for key, values := range reqLog.Header {
-		for _, value := range values {
-			if strings.Contains(
-				strings.ToLower(fmt.Sprintf("%v: %v", key, value)),
-				strings.ToLower(strLiteral.Value),
-			) {
-				return true, nil
-			}
+func (reqLog *HttpRequestLog) matchStringLiteral(strLiteral filter.StringLiteral) (bool, error) {
+	for _, header := range reqLog.GetRequest().GetHeaders() {
+		if strings.Contains(
+			strings.ToLower(fmt.Sprintf("%v: %v", header.Key, header.Value)),
+			strings.ToLower(strLiteral.Value),
+		) {
+			return true, nil
 		}
 	}
 
@@ -201,21 +189,19 @@ func (reqLog RequestLog) matchStringLiteral(strLiteral filter.StringLiteral) (bo
 		}
 	}
 
-	if reqLog.Response != nil {
-		for key, values := range reqLog.Response.Header {
-			for _, value := range values {
-				if strings.Contains(
-					strings.ToLower(fmt.Sprintf("%v: %v", key, value)),
-					strings.ToLower(strLiteral.Value),
-				) {
-					return true, nil
-				}
+	if res := reqLog.GetResponse(); res != nil {
+		for _, header := range res.Headers {
+			if strings.Contains(
+				strings.ToLower(fmt.Sprintf("%v: %v", header.Key, header.Value)),
+				strings.ToLower(strLiteral.Value),
+			) {
+				return true, nil
 			}
 		}
 
-		for _, fn := range ResLogSearchKeyFns {
+		for _, fn := range http.ResponseSearchKeyFns {
 			if strings.Contains(
-				strings.ToLower(fn(*reqLog.Response)),
+				strings.ToLower(fn(reqLog.GetResponse())),
 				strings.ToLower(strLiteral.Value),
 			) {
 				return true, nil
@@ -226,29 +212,25 @@ func (reqLog RequestLog) matchStringLiteral(strLiteral filter.StringLiteral) (bo
 	return false, nil
 }
 
-func (reqLog RequestLog) MatchScope(s *scope.Scope) bool {
+func (reqLog *HttpRequestLog) MatchScope(s *scope.Scope) bool {
 	for _, rule := range s.Rules() {
-		if rule.URL != nil && reqLog.URL != nil {
-			if matches := rule.URL.MatchString(reqLog.URL.String()); matches {
+		if rule.URL != nil {
+			if matches := rule.URL.MatchString(reqLog.GetRequest().GetUrl()); matches {
 				return true
 			}
 		}
 
-		for key, values := range reqLog.Header {
+		for _, header := range reqLog.GetRequest().GetHeaders() {
 			var keyMatches, valueMatches bool
 
-			if rule.Header.Key != nil {
-				if matches := rule.Header.Key.MatchString(key); matches {
-					keyMatches = true
-				}
+			if matches := rule.Header.Key.MatchString(header.Key); matches {
+				keyMatches = true
 			}
 
 			if rule.Header.Value != nil {
-				for _, value := range values {
-					if matches := rule.Header.Value.MatchString(value); matches {
-						valueMatches = true
-						break
-					}
+				if matches := rule.Header.Value.MatchString(header.Value); matches {
+					valueMatches = true
+					break
 				}
 			}
 			// When only key or value is set, match on whatever is set.
@@ -264,7 +246,7 @@ func (reqLog RequestLog) MatchScope(s *scope.Scope) bool {
 		}
 
 		if rule.Body != nil {
-			if matches := rule.Body.Match(reqLog.Body); matches {
+			if matches := rule.Body.Match(reqLog.GetRequest().GetBody()); matches {
 				return true
 			}
 		}

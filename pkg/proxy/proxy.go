@@ -7,20 +7,16 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
 	"time"
 
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/dstotijn/hetty/pkg/log"
 )
-
-//nolint:gosec
-var ulidEntropy = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 type contextKey int
 
@@ -95,7 +91,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+	reqID := ulid.Make()
 	ctx := context.WithValue(r.Context(), reqIDKey, reqID)
 	*r = *r.WithContext(ctx)
 

@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/dstotijn/hetty/pkg/filter"
+	httppb "github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/scope"
 )
 
@@ -34,7 +34,7 @@ var reqFilterKeyFns = map[string]func(req *http.Request) (string, error){
 			return "", err
 		}
 
-		req.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+		req.Body = io.NopCloser(bytes.NewBuffer(body))
 		return string(body), nil
 	},
 }
@@ -61,7 +61,7 @@ var resFilterKeyFns = map[string]func(res *http.Response) (string, error){
 			return "", err
 		}
 
-		res.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+		res.Body = io.NopCloser(bytes.NewBuffer(body))
 
 		return string(body), nil
 	},
@@ -134,7 +134,7 @@ func matchReqInfixExpr(req *http.Request, expr filter.InfixExpression) (bool, er
 	}
 
 	if leftVal == "headers" {
-		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, req.Header)
+		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, httppb.ParseHeader(req.Header))
 		if err != nil {
 			return false, fmt.Errorf("failed to match request HTTP headers: %w", err)
 		}
@@ -267,7 +267,7 @@ func MatchRequestScope(req *http.Request, s *scope.Scope) (bool, error) {
 				return false, fmt.Errorf("failed to read request body: %w", err)
 			}
 
-			req.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+			req.Body = io.NopCloser(bytes.NewBuffer(body))
 
 			if matches := rule.Body.Match(body); matches {
 				return true, nil
@@ -345,7 +345,7 @@ func matchResInfixExpr(res *http.Response, expr filter.InfixExpression) (bool, e
 	}
 
 	if leftVal == "headers" {
-		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, res.Header)
+		match, err := filter.MatchHTTPHeaders(expr.Operator, expr.Right, httppb.ParseHeader(res.Header))
 		if err != nil {
 			return false, fmt.Errorf("failed to match request HTTP headers: %w", err)
 		}

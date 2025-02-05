@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package hetty.http.v1;
+
+option go_package = "github.com/dstotijn/hetty/pkg/http";
+
+enum Method {
+  METHOD_UNSPECIFIED = 0;
+  METHOD_GET = 1;
+  METHOD_HEAD = 2;
+  METHOD_POST = 3;
+  METHOD_PUT = 4;
+  METHOD_DELETE = 5;
+  METHOD_CONNECT = 6;
+  METHOD_OPTIONS = 7;
+  METHOD_TRACE = 8;
+  METHOD_PATCH = 9;
+}
+
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_HTTP10 = 1;
+  PROTOCOL_HTTP11 = 2;
+  PROTOCOL_HTTP20 = 3;
+}
+
+message Request {
+  Method method = 1;
+  Protocol protocol = 2;
+  string url = 3;
+  repeated Header headers = 4;
+  bytes body = 5;
+  Response response = 6;
+}
+
+message Response {
+  Protocol protocol = 1;
+  string status = 2;
+  int32 status_code = 3;
+  repeated Header headers = 5;
+  bytes body = 6;
+}
+
+message Header {
+  string key = 1;
+  string value = 2;
+}

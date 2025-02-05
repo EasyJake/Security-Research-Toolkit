@@ -3,10 +3,11 @@ package filter
 import (
 	"errors"
 	"fmt"
-	"net/http"
+
+	"github.com/dstotijn/hetty/pkg/http"
 )
 
-func MatchHTTPHeaders(op TokenType, expr Expression, headers http.Header) (bool, error) {
+func MatchHTTPHeaders(op TokenType, expr Expression, headers []*http.Header) (bool, error) {
 	if headers == nil {
 		return false, nil
 	}
@@ -19,11 +20,9 @@ func MatchHTTPHeaders(op TokenType, expr Expression, headers http.Header) (bool,
 		}
 
 		// Return `true` if at least one header (<key>: <value>) is equal to the string literal.
-		for key, values := range headers {
-			for _, value := range values {
-				if strLiteral.Value == fmt.Sprintf("%v: %v", key, value) {
-					return true, nil
-				}
+		for _, header := range headers {
+			if strLiteral.Value == fmt.Sprintf("%v: %v", header.Key, header.Value) {
+				return true, nil
 			}
 		}
 
@@ -35,11 +34,9 @@ func MatchHTTPHeaders(op TokenType, expr Expression, headers http.Header) (bool,
 		}
 
 		// Return `true` if none of the headers (<key>: <value>) are equal to the string literal.
-		for key, values := range headers {
-			for _, value := range values {
-				if strLiteral.Value == fmt.Sprintf("%v: %v", key, value) {
-					return false, nil
-				}
+		for _, header := range headers {
+			if strLiteral.Value == fmt.Sprintf("%v: %v", header.Key, header.Value) {
+				return false, nil
 			}
 		}
 
@@ -51,11 +48,9 @@ func MatchHTTPHeaders(op TokenType, expr Expression, headers http.Header) (bool,
 		}
 
 		// Return `true` if at least one header (<key>: <value>) matches the regular expression.
-		for key, values := range headers {
-			for _, value := range values {
-				if re.MatchString(fmt.Sprintf("%v: %v", key, value)) {
-					return true, nil
-				}
+		for _, header := range headers {
+			if re.Regexp.MatchString(fmt.Sprintf("%v: %v", header.Key, header.Value)) {
+				return true, nil
 			}
 		}
 
@@ -67,11 +62,9 @@ func MatchHTTPHeaders(op TokenType, expr Expression, headers http.Header) (bool,
 		}
 
 		// Return `true` if none of the headers (<key>: <value>) match the regular expression.
-		for key, values := range headers {
-			for _, value := range values {
-				if re.MatchString(fmt.Sprintf("%v: %v", key, value)) {
-					return false, nil
-				}
+		for _, header := range headers {
+			if re.Regexp.MatchString(fmt.Sprintf("%v: %v", header.Key, header.Value)) {
+				return false, nil
 			}
 		}
 

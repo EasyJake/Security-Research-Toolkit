@@ -4,35 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
-	"net/http"
+	http "net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/oklog/ulid"
+	connect "connectrpc.com/connect"
 	"go.etcd.io/bbolt"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/dstotijn/hetty/pkg/db/bolt"
+	httppb "github.com/dstotijn/hetty/pkg/http"
 	"github.com/dstotijn/hetty/pkg/proj"
 	"github.com/dstotijn/hetty/pkg/reqlog"
 	"github.com/dstotijn/hetty/pkg/sender"
+	"github.com/dstotijn/hetty/pkg/testutil"
+	"github.com/google/go-cmp/cmp"
 )
-
-//nolint:gosec
-var ulidEntropy = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-var exampleURL = func() *url.URL {
-	u, err := url.Parse("https://example.com/foobar")
-	if err != nil {
-		panic(err)
-	}
-
-	return u
-}()
 
 func TestStoreRequest(t *testing.T) {
 	t.Parallel()
@@ -42,10 +30,16 @@ func TestStoreRequest(t *testing.T) {
 
 		svc := sender.NewService(sender.Config{})
 
-		_, err := svc.CreateOrUpdateRequest(context.Background(), sender.Request{
-			URL:    exampleURL,
-			Method: http.MethodPost,
-			Body:   []byte("foobar"),
+		_, err := svc.CreateOrUpdateRequest(context.Background(), &connect.Request[sender.CreateOrUpdateRequestRequest]{
+			Msg: &sender.CreateOrUpdateRequestRequest{
+				Request: &sender.Request{
+					HttpRequest: &httppb.Request{
+						Url:    "https://example.com/foobar",
+						Method: httppb.Method_METHOD_POST,
+						Body:   []byte("foobar"),
+					},
+				},
+			},
 		})
 		if !errors.Is(err, sender.ErrProjectIDMustBeSet) {
 			t.Fatalf("expected `sender.ErrProjectIDMustBeSet`, got: %v", err)
@@ -72,75 +66,69 @@ func TestStoreRequest(t *testing.T) {
 			Repository: db,
 		})
 
-		projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-		err = db.UpsertProject(context.Background(), proj.Project{
-			ID:       projectID,
-			Name:     "foobar",
-			Settings: proj.Settings{},
+		projectID := "foobar-project-id"
+		err = db.UpsertProject(context.Background(), &proj.Project{
+			Id:   projectID,
+			Name: "foobar",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error upserting project: %v", err)
 		}
 
 		svc.SetActiveProjectID(projectID)
-		svc.SetActiveProjectID(projectID)
 
-		exp := sender.Request{
-			ProjectID: projectID,
-			URL:       exampleURL,
-			Method:    http.MethodPost,
-			Proto:     "HTTP/1.1",
-			Header: http.Header{
-				"X-Foo": []string{"bar"},
+		exp := &sender.Request{
+			ProjectId: projectID,
+			HttpRequest: &httppb.Request{
+				Method:   httppb.Method_METHOD_POST,
+				Protocol: httppb.Protocol_PROTOCOL_HTTP20,
+				Url:      "https://example.com/foobar",
+				Headers: []*httppb.Header{
+					{Key: "X-Foo", Value: "bar"},
+				},
+				Body: []byte("foobar"),
 			},
-			Body: []byte("foobar"),
 		}
 
-		got, err := svc.CreateOrUpdateRequest(context.Background(), sender.Request{
-			URL:    exampleURL,
-			Method: http.MethodPost,
-			Proto:  "HTTP/1.1",
-			Header: http.Header{
-				"X-Foo": []string{"bar"},
+		createRes, err := svc.CreateOrUpdateRequest(context.Background(), &connect.Request[sender.CreateOrUpdateRequestRequest]{
+			Msg: &sender.CreateOrUpdateRequestRequest{
+				Request: exp,
 			},
-			Body: []byte("foobar"),
 		})
 		if err != nil {
 			t.Fatalf("unexpected error storing request: %v", err)
 		}
 
-		if got.ID.Compare(ulid.ULID{}) == 0 {
+		if createRes.Msg.Request.Id == "" {
 			t.Fatal("expected request ID to be non-empty value")
 		}
 
-		diff := cmp.Diff(exp, got, cmpopts.IgnoreFields(sender.Request{}, "ID"))
-		if diff != "" {
-			t.Fatalf("request not equal (-exp, +got):\n%v", diff)
-		}
+		testutil.ProtoDiff(t, "request not equal", exp, createRes.Msg.Request, "id")
 
-		got, err = db.FindSenderRequestByID(context.Background(), projectID, got.ID)
+		got, err := db.FindSenderRequestByID(context.Background(), projectID, createRes.Msg.Request.Id)
 		if err != nil {
 			t.Fatalf("failed to find request by ID: %v", err)
 		}
 
-		diff = cmp.Diff(exp, got, cmpopts.IgnoreFields(sender.Request{}, "ID"))
-		if diff != "" {
-			t.Fatalf("request not equal (-exp, +got):\n%v", diff)
-		}
+		testutil.ProtoDiff(t, "request not equal", exp, got, "id")
 	})
 }
 
 func TestCloneFromRequestLog(t *testing.T) {
 	t.Parallel()
 
-	reqLogID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
+	reqLogID := "foobar-req-log-id"
 
 	t.Run("without active project", func(t *testing.T) {
 		t.Parallel()
 
 		svc := sender.NewService(sender.Config{})
 
-		_, err := svc.CloneFromRequestLog(context.Background(), reqLogID)
+		_, err := svc.CloneFromRequestLog(context.Background(), &connect.Request[sender.CloneFromRequestLogRequest]{
+			Msg: &sender.CloneFromRequestLogRequest{
+				RequestLogId: reqLogID,
+			},
+		})
 		if !errors.Is(err, sender.ErrProjectIDMustBeSet) {
 			t.Fatalf("expected `sender.ErrProjectIDMustBeSet`, got: %v", err)
 		}
@@ -162,24 +150,32 @@ func TestCloneFromRequestLog(t *testing.T) {
 		}
 		defer db.Close()
 
-		projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-		err = db.UpsertProject(context.Background(), proj.Project{
-			ID: projectID,
+		projectID := "foobar-project-id"
+		err = db.UpsertProject(context.Background(), &proj.Project{
+			Id:   projectID,
+			Name: "foobar",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error upserting project: %v", err)
 		}
 
-		reqLog := reqlog.RequestLog{
-			ID:        reqLogID,
-			ProjectID: projectID,
-			URL:       exampleURL,
-			Method:    http.MethodPost,
-			Proto:     "HTTP/1.1",
-			Header: http.Header{
-				"X-Foo": []string{"bar"},
+		reqLog := &reqlog.HttpRequestLog{
+			Id:        reqLogID,
+			ProjectId: projectID,
+			Request: &httppb.Request{
+				Url:    "https://example.com/foobar",
+				Method: httppb.Method_METHOD_POST,
+				Body:   []byte("foobar"),
+				Headers: []*httppb.Header{
+					{Key: "X-Foo", Value: "bar"},
+				},
 			},
-			Body: []byte("foobar"),
+			Response: &httppb.Response{
+				Protocol:   httppb.Protocol_PROTOCOL_HTTP20,
+				StatusCode: 200,
+				Status:     "200 OK",
+				Body:       []byte("foobar"),
+			},
 		}
 
 		if err := db.StoreRequestLog(context.Background(), reqLog); err != nil {
@@ -196,27 +192,29 @@ func TestCloneFromRequestLog(t *testing.T) {
 
 		svc.SetActiveProjectID(projectID)
 
-		exp := sender.Request{
-			SourceRequestLogID: reqLogID,
-			ProjectID:          projectID,
-			URL:                exampleURL,
-			Method:             http.MethodPost,
-			Proto:              sender.HTTPProto20,
-			Header: http.Header{
-				"X-Foo": []string{"bar"},
+		exp := &sender.Request{
+			SourceRequestLogId: reqLogID,
+			ProjectId:          projectID,
+			HttpRequest: &httppb.Request{
+				Url:    "https://example.com/foobar",
+				Method: httppb.Method_METHOD_POST,
+				Body:   []byte("foobar"),
+				Headers: []*httppb.Header{
+					{Key: "X-Foo", Value: "bar"},
+				},
 			},
-			Body: []byte("foobar"),
 		}
 
-		got, err := svc.CloneFromRequestLog(context.Background(), reqLogID)
+		got, err := svc.CloneFromRequestLog(context.Background(), &connect.Request[sender.CloneFromRequestLogRequest]{
+			Msg: &sender.CloneFromRequestLogRequest{
+				RequestLogId: reqLogID,
+			},
+		})
 		if err != nil {
 			t.Fatalf("unexpected error cloning from request log: %v", err)
 		}
 
-		diff := cmp.Diff(exp, got, cmpopts.IgnoreFields(sender.Request{}, "ID"))
-		if diff != "" {
-			t.Fatalf("request not equal (-exp, +got):\n%v", diff)
-		}
+		testutil.ProtoDiff(t, "request not equal", exp, got.Msg.Request, "id")
 	})
 }
 
@@ -245,28 +243,27 @@ func TestSendRequest(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	tsURL, _ := url.Parse(ts.URL)
-
-	projectID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-	err = db.UpsertProject(context.Background(), proj.Project{
-		ID:       projectID,
-		Settings: proj.Settings{},
+	projectID := "foobar-project-id"
+	err = db.UpsertProject(context.Background(), &proj.Project{
+		Id:   projectID,
+		Name: "foobar",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error upserting project: %v", err)
 	}
 
-	reqID := ulid.MustNew(ulid.Timestamp(time.Now()), ulidEntropy)
-	req := sender.Request{
-		ID:        reqID,
-		ProjectID: projectID,
-		URL:       tsURL,
-		Method:    http.MethodPost,
-		Proto:     "HTTP/1.1",
-		Header: http.Header{
-			"X-Foo": []string{"bar"},
+	reqID := "foobar-req-id"
+	req := &sender.Request{
+		Id:        reqID,
+		ProjectId: projectID,
+		HttpRequest: &httppb.Request{
+			Url:    ts.URL,
+			Method: httppb.Method_METHOD_POST,
+			Body:   []byte("foobar"),
+			Headers: []*httppb.Header{
+				{Key: "X-Foo", Value: "bar"},
+			},
 		},
-		Body: []byte("foobar"),
 	}
 
 	if err := db.StoreSenderRequest(context.Background(), req); err != nil {
@@ -281,26 +278,38 @@ func TestSendRequest(t *testing.T) {
 	})
 	svc.SetActiveProjectID(projectID)
 
-	exp := &reqlog.ResponseLog{
-		Proto:      "HTTP/1.1",
-		StatusCode: http.StatusOK,
+	exp := &httppb.Response{
+		Protocol:   httppb.Protocol_PROTOCOL_HTTP11,
+		StatusCode: 200,
 		Status:     "200 OK",
-		Header: http.Header{
-			"Content-Length": []string{"3"},
-			"Content-Type":   []string{"text/plain; charset=utf-8"},
-			"Date":           []string{date},
-			"Foobar":         []string{"baz"},
+		Headers: []*httppb.Header{
+			{Key: "Date", Value: date},
+			{Key: "Foobar", Value: "baz"},
+			{Key: "Content-Length", Value: "3"},
+			{Key: "Content-Type", Value: "text/plain; charset=utf-8"},
 		},
 		Body: []byte("baz"),
 	}
 
-	got, err := svc.SendRequest(context.Background(), reqID)
+	got, err := svc.SendRequest(context.Background(), &connect.Request[sender.SendRequestRequest]{
+		Msg: &sender.SendRequestRequest{
+			RequestId: reqID,
+		},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error sending request: %v", err)
 	}
 
-	diff := cmp.Diff(exp, got.Response, cmpopts.IgnoreFields(sender.Request{}, "ID"))
-	if diff != "" {
-		t.Fatalf("request not equal (-exp, +got):\n%v", diff)
+	opts := []cmp.Option{
+		protocmp.Transform(),
+		protocmp.SortRepeated(func(a, b *httppb.Header) bool {
+			if a.Key != b.Key {
+				return a.Key < b.Key
+			}
+			return a.Value < b.Value
+		}),
+	}
+	if diff := cmp.Diff(exp, got.Msg.Request.HttpResponse, opts...); diff != "" {
+		t.Fatalf("response not equal (-exp, +got):\n%v", diff)
 	}
 }

@@ -96,7 +96,7 @@ $ hetty --help
 Usage:
     hetty [flags] [subcommand] [flags]
 
-Runs an HTTP server with (MITM) proxy, GraphQL service, and a web based admin interface.
+Runs an HTTP server with (MITM) proxy and a web based admin interface.
 
 Options:
     --cert         Path to root CA certificate. Creates file if it doesn't exist. (Default: "~/.hetty/hetty_cert.pem")

@@ -22,7 +22,6 @@ import (
 	"go.etcd.io/bbolt"
 	"go.uber.org/zap"
 
-	"github.com/dstotijn/hetty/pkg/api"
 	"github.com/dstotijn/hetty/pkg/chrome"
 	"github.com/dstotijn/hetty/pkg/db/bolt"
 	"github.com/dstotijn/hetty/pkg/proj"
@@ -45,7 +44,7 @@ var hettyUsage = `
 Usage:
     hetty [flags] [subcommand] [flags]
 
-Runs an HTTP server with (MITM) proxy, GraphQL service, and a web based admin interface.
+Runs an HTTP server with (MITM) proxy and a web based admin interface.
 
 Options:
     --cert         Path to root CA certificate. Creates file if it doesn't exist. (Default: "~/.hetty/hetty_cert.pem")
@@ -229,14 +228,11 @@ func (cmd *HettyCommand) Exec(ctx context.Context, _ []string) error {
 			req.Method != http.MethodConnect && !strings.HasPrefix(req.RequestURI, "http://")
 	}).Subrouter().StrictSlash(true)
 
-	// GraphQL server.
-	gqlEndpoint := "/api/graphql/"
-	adminRouter.Path(gqlEndpoint).Handler(api.HTTPHandler(&api.Resolver{
-		ProjectService:    projService,
-		RequestLogService: reqLogService,
-		InterceptService:  interceptService,
-		SenderService:     senderService,
-	}, gqlEndpoint))
+	// Connect RPC server.
+	projPath, projHandler := proj.NewProjectServiceHandler(projService)
+	adminRouter.PathPrefix(projPath).Handler(projHandler)
+	reqlogPath, reqlogHandler := reqlog.NewHttpRequestLogServiceHandler(reqLogService)
+	adminRouter.PathPrefix(reqlogPath).Handler(reqlogHandler)
 
 	// Admin interface.
 	adminRouter.PathPrefix("").Handler(adminHandler)

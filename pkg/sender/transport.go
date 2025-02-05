@@ -45,7 +45,3 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	return http.DefaultTransport.RoundTrip(req)
 }
-
-func isValidProto(proto string) bool {
-	return proto == HTTPProto10 || proto == HTTPProto11 || proto == HTTPProto20
-}
