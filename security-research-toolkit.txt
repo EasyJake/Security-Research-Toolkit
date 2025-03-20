@@ -1,0 +1,17 @@
+##easyj4ke
+
+Introducing Hetty: The Open-Source HTTP Toolkit for Security Research 🔍
+
+Looking for a powerful, free alternative to tools like Burp Suite Pro? Meet Hetty, the open-source HTTP toolkit purpose-built for security researchers, penetration testers, and bug bounty hunters.
+
+Hetty offers a comprehensive suite of features to streamline your HTTP-based security assessments:
+
+ ✅ MITM HTTP Proxy: Capture and inspect traffic with advanced logging and search capabilities.
+ ✅ HTTP Client: Create, edit, and replay requests for meticulous testing.
+ ✅ Request & Response Interception: Modify, resend, or cancel traffic for deeper analysis.
+ ✅ Scope Management: Define project boundaries to keep engagements well-organized.
+ ✅ Web-Based Interface: Enjoy an intuitive UI for seamless workflow management.
+ ✅ Project-Based Storage: Efficiently store and manage research data within structured projects.
+
+🎯 Whether you’re conducting penetration tests or diving into bug bounty hunting, Hetty delivers essential features for HTTP interception, analysis, and manipulation—all for free.
+
